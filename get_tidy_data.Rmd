@@ -1,0 +1,360 @@
+---
+title: "Get tidy data"
+author: "Luis Fernando Delgado"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("https://raw.githubusercontent.com/Cassava2050/PPD/main/utilities_tidy.R")
+```
+
+```{r}
+# Define the function to read and load multiple CSV files from cassavabase
+read_cassavabase <- function(phenotypeFiles, skip_col) {
+  possibly_read_csv <- purrr::possibly(read.csv, NULL)
+  
+  # Initialize a list to store data from each file
+  all_data <- list()
+  
+  # Loop through each file and read the data
+  for (file in phenotypeFiles) {
+    indata <- possibly_read_csv(file, 
+                                na.strings = c("#VALUE!", NA, ".", "", " ", "-", "\""), 
+                                stringsAsFactors = FALSE)
+    
+    # If the initial read fails (returns NULL), try again with the skip_col parameter
+    if (is.null(indata)) {
+      indata <- possibly_read_csv(file, 
+                                  na.strings = c("#VALUE!", NA, ".", "", " ", "-", "\""), 
+                                  stringsAsFactors = FALSE, 
+                                  skip = skip_col, 
+                                  check.names = FALSE)
+    }
+    
+    # Check if the data was successfully read
+    if (!is.null(indata)) {
+      cat("\nTrials interested are:\n", unique(indata[, 6]))
+      # Append the data to the list
+      all_data[[file]] <- indata
+    } else {
+      cat("\nFailed to read the file: ", file)
+    }
+  }
+  
+  # Identify the union of all column names across all data frames
+  all_columns <- unique(unlist(lapply(all_data, names)))
+  
+  # Add missing columns to each data frame with NA values
+  all_data <- lapply(all_data, function(df) {
+    missing_cols <- setdiff(all_columns, names(df))
+    df[missing_cols] <- NA
+    df <- df[all_columns]  # Reorder columns to ensure they match
+    return(df)
+  })
+  
+  return(all_data)
+}
+
+local_file <- "yes"
+# Define the parameters for the files
+if (local_file == "yes") {
+  folder <- here::here("data//")
+  files <- c("phenotype.csv", 
+             "phenotype(45).csv", 
+             "phenotype(46).csv",
+             "phenotype(47).csv",
+             "phenotype(48).csv",
+             "phenotype(49).csv",
+             "phenotype(50).csv",
+             "phenotype(51).csv",
+             "phenotype(52).csv",
+             "phenotype(53).csv")
+  skip_col <- 3 # double check the number of col skipped
+  trial_interest <- "DMEPR"
+  year_interest <- 2023
+}
+
+# Construct the full file paths
+file_paths <- paste0(folder, files)
+
+# Load the data from multiple files
+sel_data <- read_cassavabase(phenotypeFiles = file_paths, skip_col = skip_col)
+
+# If you want to combine all data frames into one, you can do this:
+combined_data <- do.call(rbind, sel_data)
+row.names(combined_data) <- NULL
+```
+
+# ---- Change columns into standar names ----
+
+```{r}
+sel_data_kp <- change_colname(combined_data, NA)
+```
+
+
+## change the column class
+
+```{r}
+obs_col <- c(
+  names(sel_data_kp)[str_detect(names(sel_data_kp), "obs_")],
+  "use_rep_number", "blockNumber",
+  "use_plot_number"
+)
+sel_data_kp %<>%
+  mutate(across(all_of(obs_col), as.numeric))
+
+# remove - , replace by _
+names(sel_data_kp) = gsub("-", "_", names(sel_data_kp))
+```
+
+## Duplications in row and cols
+
+```{r}
+duplicated_plot <- row_col_dup(sel_data_kp)
+```
+
+## Plot trial layout
+```{r}
+trial_layout <- function(trial = sel_data_kp) {
+  trial_list <- unique(trial$use_trial_name)
+  for (i in 1:length(trial_list)) {
+    trial_i <- trial %>%
+      filter(use_trial_name %in% trial_list[i])
+    myplot <- ggplot(trial_i, aes(x = factor(use_col_number), y = factor(use_row_number), fill = factor(use_rep_number))) +
+      geom_tile(color = "black", linewidth = 0.5) + # Black border on tiles
+      # geom_tile(
+      #   data = trial_i %>% filter(use_check_test == "check"),
+      #   aes(fill = use_check_test), col = "black"
+      # ) +
+      scale_fill_jco() +
+      geom_text(
+        data = trial_i %>% filter(use_check_test == "check"),
+        aes(label = use_accession_name), size = 2
+      ) +
+      geom_text(
+        data = trial_i %>% filter(use_check_test == "test"),
+        aes(label = use_plot_number), size = 3
+      ) +
+      labs(x = "col_number", y = "row_number", fill = "rep", title = trial_list[i]) +
+      coord_fixed() + # Square tiles
+      theme_xiaofei()
+
+    print(myplot)
+    
+    ggsave(paste("images\\layout", trial_list[i], ".png", sep = "_"),
+       plot = myplot, units = "in", dpi = 300, width = 14, height = 12)
+  }
+}
+trial_layout(sel_data_kp)
+```
+
+## Check the clone name
+```{r}
+cloneName_new_old <- check_clone_name(
+  clone_list = sel_data_kp$use_accession_name,
+  new_names = NA,
+  add_check = NULL
+)
+
+trial_standard <- sel_data_kp %>%
+  left_join(cloneName_new_old,
+            by = c("use_accession_name" = "accession_name_ori")
+  ) %>%
+  select(-use_accession_name) %>%
+  rename(use_accession_name = use_accession_name.y)
+```
+
+## Add GIS data
+
+```{r}
+trial_standard <- add_GIS(trial_standard)
+```
+
+# extract checks
+
+```{r}
+accession_rep_ct <- trial_standard %>%
+  count(use_trial_name, use_accession_name, use_rep_number)  %>%
+  arrange(use_trial_name) %>%
+  filter(n>1)
+accession_rep_ct 
+
+
+conducted_trials <- 
+  trial_standard %>% group_by(use_trial_name, use_plant_date,use_harvest_date, use_location) %>% 
+  summarise(n_gen = n_distinct(use_accession_name)) %>% 
+  mutate(harvesting_time = 
+           interval(ymd(use_plant_date), ymd(use_harvest_date)) %>% as.period,
+         harvesting_time = paste0(harvesting_time@month, "month ", harvesting_time@day, "day")) %>% 
+  ungroup()
+
+conducted_trials
+
+conducted_trials %>% relocate(harvesting_time, .after = use_harvest_date) %>% 
+  write.table("clipboard", sep="\t", col.names = T, row.names = F)
+```
+
+
+## plot plant number
+
+```{r}
+plants_plot <- trial_standard %>%
+  group_by(use_trial_name) %>%
+  count(obs_planted_number_plot) 
+plants_plot
+
+```
+
+
+## Frequency harvest plant number
+
+```{r}
+plants_harvested <- trial_standard %>%
+  group_by(use_trial_name) %>%
+  count(obs_harvest_number) %>% arrange(desc(obs_harvest_number))
+```
+
+
+# Planted and harvested
+
+```{r}
+plants_plot %>% select(-n) %>% 
+  left_join(plants_harvested %>% 
+              summarise(harvested_plants = max(obs_harvest_number, na.rm = TRUE)), 
+            by = "use_trial_name") %>% 
+  write.table("clipboard", sep="\t", col.names = T, row.names = F)
+```
+
+# Harvested plants
+
+```{r}
+plants_to_harvest <- plants_harvested %>% 
+  ggplot(aes(x = factor(obs_harvest_number), 
+             y = n, fill = factor(obs_harvest_number))) +
+  geom_col(col = 'black') +
+  theme_xiaofei() +
+  theme(legend.position="top") +
+  theme(
+    axis.text.x = element_text(size = 5, vjust = 1, angle = 65))+
+  labs(x = "Harvest_plant_number", y = "Freq", fill = "Harvest_plant_number") +
+  facet_wrap(~ use_trial_name, ncol = 5)
+
+ggsave(paste("images\\bar", trial_interest, ".png", sep = "_"),
+       plot = plants_to_harvest, units = "in", dpi = 300, width = 9, height = 6)
+```
+
+## Compute germination and yield
+
+
+```{r}
+trial_standard_new <- trial_standard %>%
+  mutate(
+    obs_germination_perc =
+      obs_germinated_number_plot / obs_planted_number_plot * 100,
+    obs_starch_yield_ha =
+      obs_starch_content * obs_yield_ha / 100
+  )
+```
+
+## Is numeric all traits?
+Checks if all traits in the dataset are numeric, ensuring data type consistency for analysis.
+
+
+```{r}
+is_numeric(trial_data = trial_standard_new)
+```
+
+## Get the tidy data
+Prepares the final tidy dataset for analysis by selecting and renaming variables, exemplifying data tidying practices.
+
+```{r}
+meta_info = names(trial_standard_new)[str_detect(names(trial_standard_new), "use_")]
+meta_info = gsub("use_", "", meta_info)
+meta_info
+trial_tidy = trial_standard_new
+names(trial_tidy)= gsub("use_", "", names(trial_standard_new))
+# observations
+trait_list = names(trial_tidy)[str_detect(names(trial_tidy), "obs_")]
+trait_list = gsub("obs_", "", trait_list)
+trait_list
+names(trial_tidy)= gsub("obs_", "", names(trial_tidy))
+trial_tidy = trial_tidy[c(meta_info, trait_list)]
+```
+
+# Boxplots and grouping boxplots
+Generates boxplots for trait distributions across trials.
+
+```{r warning=FALSE}
+trait_wanted <- trait_list
+boxplot_traits(my_dat = trial_tidy, 
+               folder = here::here("output//"), 
+               trait_wanted = trait_wanted, 
+               trial_interest = trial_interest)
+
+trial_tidy %>% filter(CMD_harvest > 5) %>% 
+  select(trial_name, location, accession_name, plot_name, CMD_harvest) %>% 
+  write.table("clipboard", col.names = T, row.names = F, sep = "\t")
+```
+
+##Deleting the CMD outlier
+
+```{r}
+trial_tidy <- trial_tidy %>% filter(!CMD_harvest > 5)
+```
+
+## Grouping boxplot
+
+```{r}
+
+plot_bxp <- trial_tidy %>%
+  pivot_longer(
+    cols = all_of(trait_wanted),
+    names_to = "var",
+    values_to = "values"
+  ) %>%
+  filter(!var %in% c(
+    "stake_plant", "planted_number_plot",
+    "harvest_number", "root_weight_air",
+    "root_weight_water", "harvest_number_plan",
+    "yield_ha_v2", "root_rot_perc", "flesh_color_50inner1_8",
+    "lodging1_3_6mon", "lodging1_3_4mon", "root_rot_number",
+    "shoot_weight_plot"
+  )) %>%
+  ggplot(aes(x = trial_name, y = values)) +
+  geom_violin(fill = "gray") +
+  geom_boxplot(width = 0.2) +
+  labs(x = NULL, y = NULL, title = "") +
+  theme_xiaofei() +
+  theme(
+    axis.text.x = element_text(size = 8, vjust = 1, angle = 75),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(color = "black"),
+    strip.text.x = element_text(
+      size = 7, face = "bold.italic")
+  ) +
+  facet_wrap(~var,
+    ncol = 3, scales = "free_y"
+  ) 
+print(plot_bxp)
+
+ggsave(paste0("images\\boxplot_fixed_", trial_interest, Sys.Date(), ".png"),
+    plot = plot_bxp, units = "in", dpi = 300, width = 14, height = 10
+  )
+
+```
+
+## Save the tidy data for analysis.
+Write the cleaned and processed dataset to a CSV file for further analysis.
+
+```{r eval=FALSE}
+write.csv(trial_tidy, here::here("output", paste("01_", year_interest, trial_interest,
+  "_tidy_data4analysis_", Sys.Date(), ".csv", sep = "")), row.names = FALSE)
+```
+
+
+
