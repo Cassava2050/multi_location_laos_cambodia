@@ -64,16 +64,17 @@ local_file <- "yes"
 # Define the parameters for the files
 if (local_file == "yes") {
   folder <- here::here("data//")
-  files <- c("phenotype.csv", 
-             "phenotype(45).csv", 
+  files <- c(#"phenotype.csv",
+             "phenotype(45).csv",
              "phenotype(46).csv",
              "phenotype(47).csv",
              "phenotype(48).csv",
              "phenotype(49).csv",
              "phenotype(50).csv",
-             "phenotype(51).csv",
-             "phenotype(52).csv",
-             "phenotype(53).csv")
+             "phenotype(51).csv"
+             #"phenotype(52).csv",
+             #"phenotype(53).csv"
+             )
   skip_col <- 3 # double check the number of col skipped
   trial_interest <- "DMEPR"
   year_interest <- 2023
@@ -88,6 +89,16 @@ sel_data <- read_cassavabase(phenotypeFiles = file_paths, skip_col = skip_col)
 # If you want to combine all data frames into one, you can do this:
 combined_data <- do.call(rbind, sel_data)
 row.names(combined_data) <- NULL
+
+
+phenotype <- read.delim("clipboard", check.names = F) 
+phenotype_52 <- read.delim("clipboard", check.names = F) 
+phenotype_53 <- read.delim("clipboard", check.names = F) 
+
+combined_data <- combined_data %>% bind_rows(phenotype) %>% 
+  bind_rows(phenotype_52) %>% 
+  bind_rows(phenotype_53)
+
 ```
 
 # ---- Change columns into standar names ----
@@ -207,7 +218,6 @@ plants_plot <- trial_standard %>%
   group_by(use_trial_name) %>%
   count(obs_planted_number_plot) 
 plants_plot
-
 ```
 
 
@@ -250,15 +260,20 @@ ggsave(paste("images\\bar", trial_interest, ".png", sep = "_"),
 
 ## Compute germination and yield
 
-
 ```{r}
 trial_standard_new <- trial_standard %>%
+  rename("obs_CMD_infect_plants" = obs_CMD_harvest) %>% 
   mutate(
     obs_germination_perc =
       obs_germinated_number_plot / obs_planted_number_plot * 100,
     obs_starch_yield_ha =
-      obs_starch_content * obs_yield_ha / 100
+      obs_starch_content * obs_yield_ha / 100, 
+    obs_CMD_incidence = (obs_CMD_infect_plants/obs_germinated_number_plot) * 100
   )
+
+
+trial_standard_new <- 
+  trial_standard_new[, colSums(is.na(trial_standard_new)) < nrow(trial_standard_new)]
 ```
 
 ## Is numeric all traits?
@@ -295,16 +310,6 @@ boxplot_traits(my_dat = trial_tidy,
                folder = here::here("output//"), 
                trait_wanted = trait_wanted, 
                trial_interest = trial_interest)
-
-trial_tidy %>% filter(CMD_harvest > 5) %>% 
-  select(trial_name, location, accession_name, plot_name, CMD_harvest) %>% 
-  write.table("clipboard", col.names = T, row.names = F, sep = "\t")
-```
-
-##Deleting the CMD outlier
-
-```{r}
-trial_tidy <- trial_tidy %>% filter(!CMD_harvest > 5)
 ```
 
 ## Grouping boxplot
